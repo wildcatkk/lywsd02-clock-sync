@@ -16,6 +16,11 @@
 - 深色/浅色主题，默认跟随系统
 - 前端没有任何依赖，不用 npm，不走 CDN
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-zh-CN-dark.png">
+  <img alt="网页界面：三个节点共同管理五台设备" src="docs/images/main-zh-CN-light.png">
+</picture>
+
 ## 目录
 
 - [支持的操作系统](#支持的操作系统)
@@ -212,6 +217,11 @@ curl -s http://127.0.0.1:8787/api/state
 有多台机器时，表格上方会列出所有节点和各自负责的设备数，**所属节点**列显示每台设备归哪个节点负责，见[多台机器组成一个集群](#多台机器组成一个集群)。
 
 语言下拉框左边的 ⚙ 打开设置：外观主题、监听地址和端口、自动校时频率、蓝牙超时都在这里。保存后写入 `config.json`，改了地址或端口要重启服务，其余立即生效。外观主题例外，它只保存在浏览器里，选「跟随系统」会跟着 Windows 或 Linux 的深浅色设置变。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-zh-CN-dark.png">
+  <img alt="设置窗口" src="docs/images/settings-zh-CN-light.png" width="380">
+</picture>
 
 右上角的下拉框切换简体中文、繁體中文和 English。它单独放在外面，是因为看不懂界面时，第一件事就是改语言。选择后立即写入 `config.json` 的 `language`，之后用任何浏览器打开都是这个语言，Windows 的安装和管理窗口也会用它。日志在浏览器端翻译，切换语言后已有的日志也会一起换。
 

@@ -16,6 +16,11 @@
 - 深色/淺色主題，預設跟隨系統
 - 前端沒有任何相依套件，不用 npm，不走 CDN
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-zh-TW-dark.png">
+  <img alt="網頁介面：三個節點共同管理五台裝置" src="docs/images/main-zh-TW-light.png">
+</picture>
+
 ## 目錄
 
 - [支援的作業系統](#支援的作業系統)
@@ -212,6 +217,11 @@ curl -s http://127.0.0.1:8787/api/state
 有多台機器時，表格上方會列出所有節點和各自負責的裝置數，**所屬節點**欄顯示每台裝置歸哪個節點負責，見[多台機器組成一個叢集](#多台機器組成一個叢集)。
 
 語言下拉選單左邊的 ⚙ 會開啟設定：外觀主題、監聽位址和通訊埠、自動校時頻率、藍牙逾時都在這裡。儲存後寫入 `config.json`，改了位址或通訊埠要重新啟動服務，其餘立即生效。外觀主題是例外，它只儲存在瀏覽器中，選「跟隨系統」會跟著 Windows 或 Linux 的深淺色設定切換。
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-zh-TW-dark.png">
+  <img alt="設定視窗" src="docs/images/settings-zh-TW-light.png" width="380">
+</picture>
 
 右上角的下拉選單可切換简体中文、繁體中文和 English。它單獨放在外面，是因為看不懂介面時，第一件事就是改語言。選擇後立即寫入 `config.json` 的 `language`，之後用任何瀏覽器開啟都是這個語言，Windows 的安裝和管理視窗也會使用它。紀錄在瀏覽器端翻譯，切換語言後已有的紀錄也會一起換。
 

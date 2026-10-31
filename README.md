@@ -27,6 +27,11 @@ host's time to the device.
 - Dark and light theme, following the system by default
 - The front end has no dependencies: no npm, no CDN
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-en-dark.png">
+  <img alt="Web UI: three nodes sharing five clocks" src="docs/images/main-en-light.png">
+</picture>
+
 ## Table of contents
 
 - [Supported operating systems](#supported-operating-systems)
@@ -314,6 +319,11 @@ address and port, sync cadence and Bluetooth timeouts. Saving writes
 `config.json`. A new address or port needs a service restart; everything else
 applies at once. Appearance is the exception. It is stored only in the browser,
 and *Follow system* follows the Windows or Linux light/dark setting.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-en-dark.png">
+  <img alt="Settings dialog" src="docs/images/settings-en-light.png" width="380">
+</picture>
 
 The picker in the top right switches between 简体中文, 繁體中文 and English. It
 sits outside the settings because when you can't read the interface, changing

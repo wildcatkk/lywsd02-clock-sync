@@ -10,3 +10,4 @@
 # Debian maintainer scripts run under /bin/sh, which rejects CRLF.
 packaging/linux/* text eol=lf
 *.ico binary
+*.png binary
