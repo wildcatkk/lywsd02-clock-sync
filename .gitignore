@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# LYWSD02 Clock Sync runtime data, written next to the source when run from a
+# checkout. devices.json holds the MAC addresses of your clocks.
+config.json
+devices.json
+state.json
+server.log

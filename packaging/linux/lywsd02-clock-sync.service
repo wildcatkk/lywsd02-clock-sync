@@ -1,0 +1,15 @@
+[Unit]
+Description=LYWSD02 Clock Sync web UI and scheduler
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+ExecStart=/opt/lywsd02-clock-sync/lywsd02-clock-sync serve
+StateDirectory=lywsd02-clock-sync
+WorkingDirectory=/var/lib/lywsd02-clock-sync
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

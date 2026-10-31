@@ -1,0 +1,76 @@
+name: release
+
+# Push a tag that matches VERSION (v1.0.0 for 1.0.0) to build every package and
+# publish them as a GitHub release. Run it by hand to get the packages as
+# workflow artifacts only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            experimental: false
+          # Windows on ARM; kept out of the way until its wheels are proven.
+          - runner: windows-11-arm
+            experimental: true
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: python packaging/build.py
+      # archive: false uploads the .exe itself, so the run page offers it unzipped.
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.exe
+          archive: false
+
+  deb:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # Built on Debian 12 so the package runs on any glibc from 2.36 up.
+    container: debian:12
+    env:
+      DEB_HOMEPAGE: ${{ github.server_url }}/${{ github.repository }}
+    steps:
+      - run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3 python3-venv python3-dev binutils ca-certificates
+      - uses: actions/checkout@v7
+      - run: python3 packaging/build.py
+      - uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.deb
+          archive: false
+
+  release:
+    needs: [windows, deb]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: download
+          merge-multiple: true
+      # Gather the packages wherever the download put them.
+      - run: |
+          mkdir dist
+          find download -type f \( -name '*.exe' -o -name '*.deb' \) -exec mv -t dist {} +
+          ls -l dist
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

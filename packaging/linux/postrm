@@ -1,0 +1,34 @@
+#!/bin/sh
+set -e
+
+DATA=/var/lib/lywsd02-clock-sync
+BEACON=8788
+
+case "$1" in
+remove)
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+    if [ -f "$DATA/.firewall" ]; then
+        read -r tool port < "$DATA/.firewall" || true
+        case "$tool" in
+        ufw)
+            ufw delete allow "$port/tcp" >/dev/null 2>&1 || true
+            ufw delete allow "$BEACON/udp" >/dev/null 2>&1 || true
+            ;;
+        firewalld)
+            firewall-cmd --permanent --remove-port="$port/tcp" >/dev/null 2>&1 || true
+            firewall-cmd --permanent --remove-port="$BEACON/udp" >/dev/null 2>&1 || true
+            firewall-cmd --reload >/dev/null 2>&1 || true
+            ;;
+        esac
+        rm -f "$DATA/.firewall"
+    fi
+    echo "settings and device data are kept in $DATA; apt purge removes them"
+    ;;
+purge)
+    rm -rf "$DATA"
+    ;;
+esac
+
+exit 0

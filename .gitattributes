@@ -1,0 +1,12 @@
+* text=auto
+
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.yml text eol=lf
+*.service text eol=lf
+# Debian maintainer scripts run under /bin/sh, which rejects CRLF.
+packaging/linux/* text eol=lf
+*.ico binary

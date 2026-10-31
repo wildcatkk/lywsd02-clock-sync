@@ -1,0 +1,37 @@
+#!/bin/sh
+set -e
+
+UNIT=lywsd02-clock-sync.service
+DATA=/var/lib/lywsd02-clock-sync
+BEACON=8788
+
+if [ "$1" = configure ]; then
+    mkdir -p "$DATA"
+    port=$(sed -n 's/^[[:space:]]*"port":[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "$DATA/config.json" 2>/dev/null | head -n 1)
+    port=${port:-8787}
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        systemctl enable "$UNIT" >/dev/null 2>&1
+        systemctl restart "$UNIT"
+    fi
+
+    # Only a firewall that is actually on gets a rule; postrm reads back what was opened.
+    if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow "$port/tcp" >/dev/null
+        ufw allow "$BEACON/udp" >/dev/null
+        echo "ufw $port" > "$DATA/.firewall"
+        echo "ufw: allowed TCP $port and UDP $BEACON"
+    elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+        firewall-cmd --permanent --add-port="$port/tcp" >/dev/null
+        firewall-cmd --permanent --add-port="$BEACON/udp" >/dev/null
+        firewall-cmd --reload >/dev/null
+        echo "firewalld $port" > "$DATA/.firewall"
+        echo "firewalld: allowed TCP $port and UDP $BEACON"
+    fi
+
+    echo "LYWSD02 Clock Sync is running: open http://<this machine>:$port"
+fi
+
+exit 0
