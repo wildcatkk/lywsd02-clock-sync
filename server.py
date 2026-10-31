@@ -260,18 +260,38 @@ async def wait_for_peers(peers, deadline):
     return False
 
 
-async def job_scan_cluster(token):
-    """Scan here, then on every peer, and hold the lock until the last one is done."""
-    await job_scan()
+async def start_on_peers(path, token, event):
+    """Hand the job to every reachable peer; returns the ones that took it."""
     peers = grid.online()
     if not peers:
-        return
-    hub.log("cluster.scanPeers", count=len(peers))
-    await asyncio.gather(*(grid.post(peer["url"], "/api/node/scan", {"token": token})
-                           for peer in peers), return_exceptions=True)
-    deadline = time.time() + float(hub.config["bluetooth"]["scan_timeout"]) + 30
-    if not await wait_for_peers(peers, deadline):
-        hub.log("cluster.scanTimeout")
+        return []
+    hub.log(event, count=len(peers))
+    answers = await asyncio.gather(*(grid.post(peer["url"], path, {"token": token})
+                                     for peer in peers), return_exceptions=True)
+    started = []
+    for peer, answer in zip(peers, answers):
+        if not isinstance(answer, Exception):
+            started.append(peer)
+            continue
+        said = getattr(answer, "detail", None)
+        hub.log("cluster.peerFailed", node=peer["name"],
+                error=said["event"] if isinstance(said, dict) else str(answer))
+    return started
+
+
+async def job_scan_cluster(token):
+    """Scan on every node at once, and hold the lock until the last one is done."""
+    # Peers first and in parallel: each has its own radio, and a local failure -
+    # no adapter, BlueZ busy - must not stop the rest of the house from scanning.
+    started = time.time()
+    peers = await start_on_peers("/api/node/scan", token, "cluster.scanPeers")
+    try:
+        await job_scan()
+    finally:
+        # A peer may use a longer scan window than ours, so wait as long as the
+        # lock allows; this returns as soon as every peer has gone idle.
+        if peers and not await wait_for_peers(peers, started + cluster.LOCK_TTL - 60):
+            hub.log("cluster.scanTimeout")
 
 
 async def job_read_owned():
@@ -290,16 +310,14 @@ async def job_read_owned():
 async def job_read_cluster(token):
     """Every node reads its own devices at once; the lock is held until all are done."""
     started = time.time()
-    peers = grid.online()
-    if peers:
-        hub.log("cluster.readPeers", count=len(peers))
-        await asyncio.gather(*(grid.post(peer["url"], "/api/node/read", {"token": token})
-                               for peer in peers), return_exceptions=True)
-    await job_read_owned()
-    # A slow device can take minutes with retries, so wait for as long as the
-    # peers will keep our lock, not for a fixed scan window.
-    if peers and not await wait_for_peers(peers, started + cluster.LOCK_TTL - 60):
-        hub.log("cluster.readTimeout")
+    peers = await start_on_peers("/api/node/read", token, "cluster.readPeers")
+    try:
+        await job_read_owned()
+    finally:
+        # A slow device can take minutes with retries, so wait for as long as the
+        # peers will keep our lock, not for a fixed scan window.
+        if peers and not await wait_for_peers(peers, started + cluster.LOCK_TTL - 60):
+            hub.log("cluster.readTimeout")
 
 
 async def job_auto():
