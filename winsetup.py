@@ -436,8 +436,9 @@ def run(command, log=None, encoding=None):
     if log:
         log("  $ " + subprocess.list2cmdline(command))
     try:
-        done = subprocess.run(command, capture_output=True, creationflags=CREATE_NO_WINDOW)
-    except OSError as error:
+        done = subprocess.run(command, capture_output=True, creationflags=CREATE_NO_WINDOW,
+                              timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as error:
         return -1, str(error)
     output = (done.stdout + done.stderr).decode(encoding or OEM, "replace")
     return done.returncode, output.replace("\0", "").strip()

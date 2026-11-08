@@ -225,3 +225,13 @@ config.json
 devices.json
 state.json
 server.log
+
+# ESP-IDF firmware: sdkconfig is regenerated from sdkconfig.defaults*, and the
+# component manager downloads managed_components again from dependencies.lock.
+esp32/node/sdkconfig
+esp32/node/sdkconfig.old
+esp32/node/managed_components/
+
+# Flash package: your Wi-Fi password and serial logs when run from a checkout.
+esp32/flash/wifi.txt
+esp32/flash/logs/

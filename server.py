@@ -8,39 +8,66 @@ readings to devices.json, next to it.
 
 import asyncio
 import datetime
+import json
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 import socket
 import sys
 import time
+import uuid
 from contextlib import asynccontextmanager
+from typing import Annotated, Literal
 
 import paths
 
 DATA_DIR = paths.data_dir()
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# The Windows build has no console at all: without this redirect a startup
-# crash would leave nothing behind to read.
+class _RotatingStream:
+    """A file-like stream: preserve print/traceback writes and rotate while running."""
+
+    encoding = "utf-8"
+    errors = "replace"
+
+    def __init__(self, path):
+        self.handler = RotatingFileHandler(path, maxBytes=1_000_000, backupCount=1,
+                                           encoding=self.encoding, errors=self.errors)
+        self.handler.terminator = ""
+
+    def write(self, text):
+        if text:
+            self.handler.handle(logging.LogRecord("console", logging.INFO, "", 0,
+                                                  text, (), None))
+        return len(text)
+
+    def flush(self):
+        self.handler.flush()
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        return self.handler.stream.fileno()
+
+
+# Only replace absent console streams; existing stdout/stderr remain untouched.
 if sys.stdout is None or sys.stderr is None:
-    LOG_PATH = os.path.join(DATA_DIR, "server.log")
-    # Appended to on every start and never read back past the last screenful, so
-    # keep one previous generation and let the rest go.
-    try:
-        if os.path.getsize(LOG_PATH) > 1_000_000:
-            os.replace(LOG_PATH, LOG_PATH + ".1")
-    except OSError:
-        pass
-    sys.stdout = sys.stderr = open(LOG_PATH, "a", encoding="utf-8", buffering=1)
+    stream = _RotatingStream(os.path.join(DATA_DIR, "server.log"))
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
 
 import uvicorn
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from typing import Literal
+from pydantic import BaseModel, Field, RootModel, StringConstraints, field_validator
 
 import cluster
 import lywsd02
+import ntp
 import store
 
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
@@ -63,7 +90,12 @@ DEFAULT_CONFIG = {
     "schedule": {"mode": "weekly", "weekday": 6, "hour": 4, "minute": 0},
     "bluetooth": {"scan_timeout": 25.0, "connect_timeout": 20.0,
                   "env_timeout": 15.0, "retries": 3},
+    # Where the clocks get their time from: an NTP host, or empty for this machine.
+    "time_server": "",
 }
+
+# A server answer is reused for this long; the offset of a sane clock barely moves.
+TIME_SERVER_CACHE = 600
 
 
 def load_config():
@@ -119,11 +151,14 @@ class Hub:
             # through.
             self.state["last_auto_run"] = time.time()
             self.save_state()
-        self.queue = asyncio.Queue()
+        self.queue = asyncio.Queue(maxsize=32)
         self.pending = set()
         self.busy = None
         self.logs = []
-        self.watched_at = 0.0
+        self.log_boot = uuid.uuid4().hex[:16]
+        self.log_cursor = 0
+        self.watched_at = float("-inf")
+        self.time_offset = None  # (server, offset, monotonic measurement time)
 
     @property
     def watched(self):
@@ -132,13 +167,46 @@ class Hub:
         Only /api/state counts, never a peer's probe: two idle nodes watching each
         other would otherwise keep each other at the fast cadence forever.
         """
-        return time.time() - self.watched_at < cluster.WATCH_WINDOW
+        return time.monotonic() - self.watched_at < cluster.WATCH_WINDOW
 
     def log(self, event, **params):
-        self.logs.append({"at": time.time(), "event": event, "params": params})
+        # Text from adapters, peer errors and labels must not balloon a log batch.
+        safe = {}
+        budget = 768
+        for key, value in list(params.items())[:16]:
+            key = str(key)[:64]
+            if value is not None and type(value) not in (bool, int, float):
+                value = str(value).replace("\x00", "")[:min(512, budget)]
+            elif type(value) in (int, float):
+                try:
+                    cluster.number_value(value)
+                except cluster.LocalFailure:
+                    value = str(value)[:64]
+            cost = len(json.dumps({key: value}, ensure_ascii=False).encode("utf-8"))
+            if cost > budget:
+                break
+            safe[key] = value
+            budget -= cost
+        if self.log_cursor >= cluster.MAX_CURSOR:
+            self.clear_logs()
+        self.log_cursor += 1
+        event = str(event)[:128]
+        while len(json.dumps(event, ensure_ascii=False).encode("utf-8")) > 256:
+            event = event[:len(event) // 2]
+        self.logs.append({"id": self.log_cursor, "at": time.time(),
+                          "event": event, "params": safe})
         del self.logs[:-200]
-        detail = " ".join(f"{key}={value}" for key, value in params.items())
+        detail = " ".join(f"{key}={value}" for key, value in safe.items())
         print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {event} {detail}".rstrip(), flush=True)
+
+    def clear_logs(self):
+        self.logs.clear()
+        self.log_boot = uuid.uuid4().hex[:16]
+        self.log_cursor = 0
+
+    def log_source(self, boot="", after=0):
+        return cluster.log_batch(grid.node_id, grid.name, self.log_boot,
+                                 self.log_cursor, self.logs, boot, after)
 
     def save_devices(self):
         store.save(DEVICES_PATH, self.devices)
@@ -152,6 +220,8 @@ class Hub:
     def record(self, key):
         existing = self.devices.get(key)
         if existing is None:
+            if len(self.devices) >= cluster.MAX_DEVICES:
+                raise cluster.LocalFailure("Device record limit")
             # No label is stored, so the UI can show a default in the chosen language.
             existing = {"auto": True}
             self.devices[key] = existing
@@ -165,8 +235,19 @@ class Hub:
         if key in self.pending:
             self.log("queue.duplicate", target=self.name_of(key))
             return False
-        self.pending.add(key)
-        self.queue.put_nowait({"key": key, "event": event, "run": run, "token": token})
+        try:
+            self.pending.add(key)
+            self.queue.put_nowait({"key": key, "event": event, "run": run, "token": token})
+        except (asyncio.QueueFull, MemoryError):
+            self.pending.discard(key)
+            try:
+                self.log("queue.full", target=self.name_of(key))
+            except MemoryError:
+                pass
+            return False
+        except BaseException:
+            self.pending.discard(key)
+            raise
         return True
 
 
@@ -179,13 +260,17 @@ async def job_scan():
     hub.log("scan.start", seconds=round(timeout))
     found = 0
     heard = set()
-    for address, (device, adv) in (await lywsd02.scan(timeout)).items():
+    for address, (device, adv) in (await lywsd02.scan(
+            timeout, known=hub.devices, limit=cluster.MAX_DEVICES)).items():
         key = lywsd02.normalize_address(address)
         if not lywsd02.looks_like_clock(device, adv) and key not in hub.devices:
             continue
+        if key not in hub.devices and len(hub.devices) >= cluster.MAX_DEVICES:
+            continue
         record = hub.record(key)
         record["address"] = address
-        record["name"] = adv.local_name or device.name
+        # Some firmware pads the name with NULs, which the ESP32 nodes cannot store.
+        record["name"] = (adv.local_name or device.name or "").split("\x00")[0] or None
         record["rssi"] = adv.rssi
         record["product_id"] = lywsd02.product_id(adv)
         record["seen_at"] = time.time()
@@ -198,6 +283,20 @@ async def job_scan():
             record["rssi"] = None
     hub.save_devices()
     hub.log("scan.done", count=found)
+
+
+async def time_offset():
+    """Seconds to add to this machine's clock to get the configured reference."""
+    server = hub.config["time_server"]
+    if not server:
+        return 0.0
+    cached = hub.time_offset
+    if cached and cached[0] == server and time.monotonic() - cached[2] < TIME_SERVER_CACHE:
+        return cached[1]
+    offset = await asyncio.to_thread(ntp.query, server)
+    hub.time_offset = (server, offset, time.monotonic())
+    hub.log("time.offset", server=server, offset=round(offset, 3) + 0.0)  # no "-0.0"
+    return offset
 
 
 async def job_visit(key, write):
@@ -214,6 +313,20 @@ async def job_visit(key, write):
 
     hub.log("device.syncing" if write else "device.reading", target=name)
     try:
+        offset = await time_offset()
+    except Exception as error:
+        server = hub.config["time_server"]
+        if write:
+            # Writing the local time when somebody asked for a server would be
+            # quietly doing the wrong thing; a read only reports, so it carries on.
+            record["error"] = f"{server}: {error!r}"
+            record["error_at"] = time.time()
+            hub.save_devices()
+            hub.log("time.serverFailed", target=name, server=server, error=repr(error))
+            return
+        hub.log("time.serverFallback", server=server, error=repr(error))
+        offset = 0.0
+    try:
         report = await lywsd02.visit_with_retries(
             await locate(),
             retries=radio["retries"],
@@ -224,8 +337,11 @@ async def job_visit(key, write):
             env=True,
             connect_timeout=radio["connect_timeout"],
             env_timeout=radio["env_timeout"],
+            offset=offset,
         )
     except Exception as error:
+        if lywsd02.radio_problem(error):
+            raise  # Not this clock's fault, and every other clock would fail the same way.
         record["error"] = str(error)
         record["error_at"] = time.time()
         hub.save_devices()
@@ -248,20 +364,46 @@ async def job_visit(key, write):
 
 
 async def wait_for_peers(peers, deadline):
-    """True once no peer has a job running or queued, False at the deadline."""
-    while time.time() < deadline:
-        await asyncio.sleep(2)
-        states = await asyncio.gather(*(grid.get(peer["url"], "/api/node/state")
+    """Unknown is not idle; only thirty continuous seconds of network failure count."""
+    if not peers:
+        return True
+    down_since = {}
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        states = await asyncio.gather(*(grid.get(peer["url"], "/api/node/status",
+                                                timeout=min(cluster.STATE_TIMEOUT, remaining))
                                        for peer in peers), return_exceptions=True)
-        # An unreachable peer counts as finished; waiting on it would hold the lock.
-        if not any(isinstance(state, dict) and (state.get("busy") or state.get("queued"))
-                   for state in states):
+        now = time.monotonic()
+        if now >= deadline:
+            return False
+        finished = True
+        for peer, state in zip(peers, states):
+            url = peer["url"]
+            if isinstance(state, BaseException) and cluster.network_failure(state):
+                since = down_since.setdefault(url, now)
+                if now - since < cluster.DOWN_GRACE:
+                    finished = False
+                continue
+            down_since.pop(url, None)  # Unknown/local/5xx breaks the network streak.
+            try:
+                if isinstance(state, BaseException):
+                    raise cluster.LocalFailure(str(state))
+                cluster.validate_status(state)
+                if (peer.get("node_id") and state["node"]["id"] != peer["node_id"]):
+                    raise cluster.LocalFailure("Status identity changed")
+                if state["busy"] is not None or state["queued"]:
+                    finished = False
+            except Exception as error:
+                grid.local_failure(error)
+                finished = False
+        if finished:
             return True
+        await asyncio.sleep(min(2, max(0, deadline - time.monotonic())))
     return False
 
 
 async def start_on_peers(path, token, event):
-    """Hand the job to every reachable peer; returns the ones that took it."""
+    """Return accepted or unacknowledged jobs; an unknown reply may have queued work."""
     peers = grid.online()
     if not peers:
         return []
@@ -270,12 +412,22 @@ async def start_on_peers(path, token, event):
                                      for peer in peers), return_exceptions=True)
     started = []
     for peer, answer in zip(peers, answers):
-        if not isinstance(answer, Exception):
+        acknowledged = (isinstance(answer, dict) and set(answer) == {"queued"}
+                        and type(answer["queued"]) is bool)
+        if acknowledged and answer["queued"]:
             started.append(peer)
             continue
+        refused = acknowledged or isinstance(answer, cluster.Rejected) and 400 <= answer.status < 500
+        if not refused:
+            started.append(peer)  # Do not release the lock on an unknown job result.
+        if acknowledged:
+            hub.log("cluster.peerFailed", node=peer["name"], error="error.alreadyQueued")
+            continue
+        if not isinstance(answer, BaseException):
+            answer = cluster.LocalFailure("Job was not acknowledged as queued")
         said = getattr(answer, "detail", None)
         hub.log("cluster.peerFailed", node=peer["name"],
-                error=said["event"] if isinstance(said, dict) else str(answer))
+                error=said.get("event") or str(answer) if isinstance(said, dict) else str(answer))
     return started
 
 
@@ -283,14 +435,15 @@ async def job_scan_cluster(token):
     """Scan on every node at once, and hold the lock until the last one is done."""
     # Peers first and in parallel: each has its own radio, and a local failure -
     # no adapter, BlueZ busy - must not stop the rest of the house from scanning.
-    started = time.time()
+    started = time.monotonic()
     peers = await start_on_peers("/api/node/scan", token, "cluster.scanPeers")
     try:
         await job_scan()
     finally:
         # A peer may use a longer scan window than ours, so wait as long as the
         # lock allows; this returns as soon as every peer has gone idle.
-        if peers and not await wait_for_peers(peers, started + cluster.LOCK_TTL - 60):
+        if (peers and not asyncio.current_task().cancelling()
+                and not await wait_for_peers(peers, started + cluster.LOCK_TTL - 60)):
             hub.log("cluster.scanTimeout")
 
 
@@ -309,14 +462,15 @@ async def job_read_owned():
 
 async def job_read_cluster(token):
     """Every node reads its own devices at once; the lock is held until all are done."""
-    started = time.time()
+    started = time.monotonic()
     peers = await start_on_peers("/api/node/read", token, "cluster.readPeers")
     try:
         await job_read_owned()
     finally:
         # A slow device can take minutes with retries, so wait for as long as the
         # peers will keep our lock, not for a fixed scan window.
-        if peers and not await wait_for_peers(peers, started + cluster.LOCK_TTL - 60):
+        if (peers and not asyncio.current_task().cancelling()
+                and not await wait_for_peers(peers, started + cluster.LOCK_TTL - 60)):
             hub.log("cluster.readTimeout")
 
 
@@ -329,51 +483,68 @@ async def job_auto():
         await job_visit(key, write=True)
     if not mine and not taken:
         hub.log("schedule.nothingHere")
+    hub.state["last_auto_run"] = time.time()
+    hub.save_state()
 
 
 async def worker():
     while True:
         job = await hub.queue.get()
         hub.busy = job["event"]
-        keeper = asyncio.create_task(grid.keep(job["token"])) if job["token"] else None
+        keeper = None
         try:
+            keeper = asyncio.create_task(grid.keep(job["token"])) if job["token"] else None
             await job["run"]()
         except Exception as error:
-            hub.log("job.crashed", error=repr(error))
+            reason = lywsd02.radio_problem(error)
+            if reason:
+                hub.log(f"bluetooth.{reason}", error=str(error.args[0] if error.args else error))
+            else:
+                hub.log("job.crashed", error=repr(error))
         finally:
-            if keeper:
-                keeper.cancel()
-            hub.busy = None
-            hub.pending.discard(job["key"])
-            if job["token"]:
-                await grid.release(job["token"])
-            hub.queue.task_done()
+            async def cleanup():
+                if keeper:
+                    keeper.cancel()
+                    await asyncio.gather(keeper, return_exceptions=True)
+                if job["token"]:
+                    try:
+                        await grid.release(job["token"])
+                    except Exception as error:
+                        hub.log("job.crashed", error=repr(error))
+
+            try:
+                await cluster.finish_cleanup(cleanup())
+            finally:
+                hub.busy = None
+                hub.pending.discard(job["key"])
+                hub.queue.task_done()
 
 
 async def scheduler():
     while True:
         await asyncio.sleep(60)
-        due = last_scheduled(hub.config.get("schedule", {}), time.time())
-        if due is None or hub.state.get("last_auto_run", 0) >= due:
-            continue
-        # Decided from the merged view we already have, before the lock and before
-        # the radio: a node that owns nothing must not scan for 25 seconds just to
-        # find that out, and must not hold the cluster still while it does.
-        if not grid.my_work(grid.merge(local_views())):
-            hub.state["last_auto_run"] = time.time()
-            hub.save_state()
-            hub.log("schedule.nothingHere")
-            continue
-        event = {"event": "busy.scheduled", "params": {}}
+        token = None
         try:
+            due = last_scheduled(hub.config.get("schedule", {}), time.time())
+            if due is None or hub.state.get("last_auto_run", 0) >= due:
+                continue
+            if not grid.my_work(grid.merge(local_views())):
+                hub.state["last_auto_run"] = time.time()
+                hub.save_state()
+                hub.log("schedule.nothingHere")
+                continue
+            event = {"event": "busy.scheduled", "params": {}}
             token = await grid.acquire(event)
+            hub.log("schedule.triggered", due=time.strftime("%Y-%m-%d %H:%M", time.localtime(due)))
+            if hub.enqueue("auto", event, job_auto, token):
+                token = None
         except cluster.Busy:
-            continue        # a peer is on the radio; the slot stays due, retry in a minute
-        hub.state["last_auto_run"] = time.time()
-        hub.save_state()
-        hub.log("schedule.triggered", due=time.strftime("%Y-%m-%d %H:%M", time.localtime(due)))
-        if not hub.enqueue("auto", event, job_auto, token):
-            await grid.release(token)
+            continue
+        except (MemoryError, cluster.LocalFailure) as error:
+            grid.local_failure(error)
+        finally:
+            if token:
+                await cluster.finish_cleanup(grid.release(token))
 
 
 @asynccontextmanager
@@ -385,12 +556,95 @@ async def lifespan(_app):
     try:
         yield
     finally:
-        for task in tasks:
-            task.cancel()
+        async def cleanup():
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            tokens = set()
+            while not hub.queue.empty():
+                job = hub.queue.get_nowait()
+                try:
+                    hub.pending.discard(job["key"])
+                    if job["token"]:
+                        grid.drop(job["token"])
+                        tokens.add(job["token"])
+                finally:
+                    hub.queue.task_done()
+            await asyncio.gather(*(grid.release(token) for token in tokens),
+                                 return_exceptions=True)
+            await grid.close()  # Also reclaim a shielded refresh left by a browser.
+
+        await cluster.finish_cleanup(cleanup())
+
+
+class BoundedJSONBody:
+    """Bound ASGI reads before FastAPI can call request.json()/body()."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "")
+        limit = 32 * 1024
+        if path == "/api/logs" or path.startswith("/api/node/lock") or path.startswith("/api/node/unlock"):
+            limit = 4096
+        elif path == "/api/settings":
+            limit = 8192
+        elif path.startswith("/api/devices/"):
+            limit = 4096
+        body = bytearray()
+        try:
+            lengths = [value for key, value in scope.get("headers", []) if key.lower() == b"content-length"]
+            if len(lengths) > 1:
+                raise ValueError("Duplicate Content-Length")
+            if lengths:
+                length = int(lengths[0])
+                if length < 0:
+                    raise ValueError("Invalid Content-Length")
+                if length > limit:
+                    return await JSONResponse({"detail": "Request body too large"}, 413)(scope, receive, send)
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return
+                if message["type"] != "http.request":
+                    raise ValueError("Invalid request message")
+                chunk = message.get("body", b"")
+                if len(body) + len(chunk) > limit:
+                    return await JSONResponse({"detail": "Request body too large"}, 413)(scope, receive, send)
+                body.extend(chunk)
+                if not message.get("more_body", False):
+                    break
+            if body:
+                cluster.bounded_json(body)
+        except (ValueError, cluster.LocalFailure, MemoryError):
+            return await JSONResponse({"detail": "Invalid or excessively nested JSON"}, 400)(scope, receive, send)
+        delivered = False
+
+        async def bounded_receive():
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                return {"type": "http.request", "body": bytes(body), "more_body": False}
+            return await receive()
+
+        await self.app(scope, bounded_receive, send)
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(BoundedJSONBody)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+def fit(text, size):
+    """At most `size` UTF-8 bytes and no NUL, as the ESP32 nodes require."""
+    if text is None:
+        return None
+    text = text.replace("\x00", "")
+    data = text.encode("utf-8")
+    return text if len(data) <= size else data[:size].decode("utf-8", "ignore")
 
 
 def device_view(key, record):
@@ -398,18 +652,18 @@ def device_view(key, record):
     return {
         "key": key,
         "address": record.get("address", key),
-        "label": record.get("label"),
+        "label": fit(record.get("label"), 160),
         "label_at": record.get("label_at"),
         "auto": record.get("auto", True),
         "auto_at": record.get("auto_at"),
         "owner_pin": record.get("owner_pin"),
         "pin_at": record.get("pin_at"),
-        "name": record.get("name"),
+        "name": fit(record.get("name"), 96),
         "rssi": record.get("rssi"),
         "seen_at": record.get("seen_at"),
-        "model": last.get("model"),
-        "firmware": last.get("firmware"),
-        "serial": last.get("serial"),
+        "model": fit(last.get("model"), 128),
+        "firmware": fit(last.get("firmware"), 128),
+        "serial": fit(last.get("serial"), 128),
         "battery": last.get("battery"),
         "voltage": last.get("voltage"),
         "temperature": last.get("temperature"),
@@ -418,27 +672,28 @@ def device_view(key, record):
         "timezone": last.get("timezone"),
         "drift": last.get("drift"),
         "updated_at": last.get("at"),
-        "error": record.get("error"),
+        "error": fit(record.get("error"), 512),
         "error_at": record.get("error_at"),
         "pending": key in hub.pending,
     }
 
 
-def local_views():
-    return [device_view(key, record)
-            for key, record in sorted(hub.devices.items(), key=lambda item: item[0])]
+def local_views(limit=None):
+    items = sorted(hub.devices.items(), key=lambda item: item[0])
+    if limit is not None:
+        items = items[:limit]
+    return [device_view(key, record) for key, record in items]
+
+
+def local_status():
+    return {"node": grid.self_view, "busy": hub.busy, "queued": hub.queue.qsize()}
 
 
 def local_state():
-    """What one node knows by itself: its own radio, its own queue, its own log."""
-    return {
-        "node": grid.self_view,
-        "busy": hub.busy,
-        "queued": hub.queue.qsize(),
-        "host_time": time.time(),
-        "logs": hub.logs[-60:],
-        "devices": local_views(),
-    }
+    """Node snapshots carry only the log version, never the log history."""
+    return dict(local_status(), host_time=time.time(),
+                log_boot=hub.log_boot, log_cursor=hub.log_cursor,
+                devices=local_views(cluster.MAX_DEVICES))
 
 
 def detail(event, **params):
@@ -447,14 +702,14 @@ def detail(event, **params):
 
 
 class DevicePatch(BaseModel):
-    label: str | None = None
+    label: str | None = Field(default=None, max_length=40)
     auto: bool | None = None
-    owner_pin: str | None = None
+    owner_pin: str | None = Field(default=None, max_length=64)
 
 
 class NodeSettings(BaseModel):
     name: str = Field(min_length=1, max_length=24)
-    peers: list[str] = Field(default_factory=list, max_length=8)
+    peers: list[Annotated[str, StringConstraints(max_length=256)]] = Field(default_factory=list, max_length=10)
     cluster: bool = True
     discovery: bool = True
 
@@ -479,6 +734,7 @@ class Settings(BaseModel):
     node: NodeSettings
     schedule: ScheduleSettings
     bluetooth: RadioSettings
+    time_server: str = Field(default="", max_length=64, pattern=r"^[A-Za-z0-9.-]*$")
 
 
 class LanguageChoice(BaseModel):
@@ -491,9 +747,31 @@ class LockClaim(BaseModel):
     holder_name: str = Field(min_length=1, max_length=64)
     op: dict | None = None
 
+    @field_validator("op")
+    @classmethod
+    def valid_operation(cls, value):
+        try:
+            cluster.validate_busy(value)
+        except cluster.LocalFailure as error:
+            raise ValueError(str(error)) from error
+        return value
+
 
 class LockToken(BaseModel):
-    token: str | None = None
+    token: str | None = Field(default=None, min_length=8, max_length=64)
+
+
+BootQuery = Annotated[str, Query(pattern=r"^(?:[0-9a-fA-F]{16})?$")]
+AfterQuery = Annotated[int, Query(ge=0, le=cluster.MAX_CURSOR)]
+
+
+class LogPosition(BaseModel):
+    boot: str = Field(default="", max_length=16, pattern=r"^(?:[0-9a-fA-F]{16})?$")
+    after: int = Field(default=0, ge=0, le=cluster.MAX_CURSOR, strict=True)
+
+
+class LogPositions(RootModel):
+    root: dict[Annotated[str, StringConstraints(min_length=1, max_length=64)], LogPosition] = Field(max_length=11)
 
 
 @app.get("/")
@@ -516,12 +794,22 @@ node = APIRouter(prefix="/api/node", dependencies=[Depends(cluster_enabled)])
 
 
 @node.get("/state")
-async def node_state(request: Request, port: int | None = None):
+async def node_state(request: Request, port: Annotated[int | None, Query(ge=1, le=65535)] = None):
     # A probe is also an announcement: on a network where our broadcast never
     # arrives, this is the only thing that tells us the caller is out there.
     if port and request.client:
         grid.hear(request.client.host, port)
     return local_state()
+
+
+@node.get("/status")
+async def node_status():
+    return local_status()
+
+
+@node.get("/logs")
+async def node_logs(boot: BootQuery = "", after: AfterQuery = 0):
+    return hub.log_source(boot, after)
 
 
 @node.post("/lock")
@@ -555,7 +843,8 @@ async def node_read(body: LockToken):
 
 @node.post("/logs/clear")
 async def node_clear_logs():
-    hub.logs.clear()
+    hub.clear_logs()
+    grid.clear_log_cache()
     return {"logs": []}
 
 
@@ -601,18 +890,12 @@ async def get_state():
     # beacon every two seconds and race the poll loop to the same probes.
     if not hub.watched:
         grid.wake()
-    hub.watched_at = time.time()
+    hub.watched_at = time.monotonic()
     await grid.ensure_fresh()
-    local = local_state()
-    merged = grid.merge(local["devices"])
+    local = local_status()
+    merged = grid.merge(local_views())
     schedule = hub.config.get("schedule", {})
     language = hub.config.get("language", "zh-CN")
-
-    logs = [dict(entry, node=grid.name) for entry in local["logs"]]
-    for peer in grid.online():
-        logs += [dict(entry, node=peer["name"])
-                 for entry in ((peer["state"] or {}).get("logs") or [])]
-    logs.sort(key=lambda entry: entry["at"])
 
     return {
         "language": language if language in LANGUAGES else "zh-CN",
@@ -622,10 +905,9 @@ async def get_state():
         "lock": grid.lock_view(),
         "busy": local["busy"],
         "queued": local["queued"],
-        "host_time": local["host_time"],
+        "host_time": time.time(),
         "schedule": schedule,
         "next_run": next_scheduled(schedule, time.time()),
-        "logs": logs[-150:],
         "devices": merged,
     }
 
@@ -665,15 +947,40 @@ async def post_read():
     return {"queued": True}
 
 
+@app.post("/api/logs")
+async def post_logs(positions: LogPositions):
+    if not hub.watched:
+        grid.wake()
+    hub.watched_at = time.monotonic()
+    await grid.ensure_fresh()
+    requested = positions.root
+    position = requested.get(grid.node_id) or LogPosition()
+    sources = [hub.log_source(position.boot, position.after)]
+    seen = {grid.node_id}
+    for peer in grid.peers.values():
+        node_id = peer["node_id"]
+        if not node_id or node_id in seen or peer["log_boot"] is None:
+            continue
+        position = requested.get(node_id) or LogPosition()
+        sources.append(cluster.log_batch(node_id, peer["name"], peer["log_boot"],
+                       peer["log_cursor"], peer["logs"], position.boot, position.after))
+        seen.add(node_id)
+    return {"sources": sources}
+
+
 @app.post("/api/logs/clear")
 async def post_clear_logs():
-    hub.logs.clear()
-    await asyncio.gather(*(grid.post(peer["url"], "/api/node/logs/clear")
-                           for peer in grid.online()), return_exceptions=True)
+    hub.clear_logs()
+    grid.clear_log_cache()
+    try:
+        await asyncio.gather(*(grid.post(peer["url"], "/api/node/logs/clear")
+                               for peer in grid.online()), return_exceptions=True)
+    finally:
+        grid.clear_log_cache()  # Discard any round that raced remote clearing.
     return {"logs": []}
 
 
-SETTING_KEYS = ("node", "host", "port", "schedule", "bluetooth")
+SETTING_KEYS = ("node", "host", "port", "schedule", "bluetooth", "time_server")
 
 
 def settings_view():
@@ -781,7 +1088,7 @@ async def patch_device(key: str, patch: DevicePatch):
     device = find(key)
     # Labels, the auto flag and the pin are edited on whichever page is open and then
     # spread to the other nodes by timestamp, so they survive an offline peer.
-    record = hub.record(key)
+    record = dict(hub.devices.get(key) or {"auto": True})
     record.setdefault("address", device["address"])
     now = time.time()
 
@@ -799,6 +1106,9 @@ async def patch_device(key: str, patch: DevicePatch):
             raise HTTPException(status_code=400, detail=detail("error.nodeNotHeard"))
         record["owner_pin"], record["pin_at"] = pin, now
 
+    if key not in hub.devices and len(hub.devices) >= cluster.MAX_DEVICES:
+        raise HTTPException(status_code=503, detail="Device record limit")
+    hub.devices[key] = record
     hub.save_devices()
     return {"ok": True}
 

@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Config</title>
+<link rel="icon" type="image/png" href="/static/icon.png">
+<style>
+  :root, html[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0f1419; --panel: #171d24; --line: #262e38; --field: #0d1218;
+    --btn: #222b35; --btn-hover: #2c3744; --text: #dfe6ee; --dim: #7c8a99;
+    --accent: #4da3ff; --on-accent: #07121d; --ok: #3fbf7f; --bad: #e8604c;
+  }
+  html[data-theme="light"] {
+    color-scheme: light;
+    --bg: #f3f5f8; --panel: #ffffff; --line: #e1e7ee; --field: #ffffff;
+    --btn: #ffffff; --btn-hover: #f2f6fa; --text: #1d2733; --dim: #64748b;
+    --accent: #1a73e8; --on-accent: #ffffff; --ok: #157f3c; --bad: #c23a20;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 22px 16px; background: var(--bg); color: var(--text);
+    font: 15px/1.5 "Segoe UI", "Microsoft YaHei", "PingFang TC", system-ui, sans-serif;
+  }
+  main { max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 6px; display: flex; align-items: center; gap: 10px; }
+  h1 img { width: 28px; height: 28px; }
+  h2 { font-size: 15px; margin: 0 0 8px; }
+  p { margin: 6px 0; }
+  [hidden] { display: none !important; }
+  .dim { color: var(--dim); font-size: 13.5px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+          padding: 14px; margin-top: 14px; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+         margin-bottom: 6px; }
+  #list button {
+    display: flex; width: 100%; justify-content: space-between; align-items: center;
+    text-align: left; margin: 4px 0; padding: 10px 12px;
+  }
+  #list .sig { color: var(--dim); font-size: 13px; white-space: nowrap; margin-left: 10px;
+               display: inline-flex; align-items: center; gap: 6px; }
+  .lock { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; }
+  label { display: block; font-size: 13.5px; color: var(--dim); margin: 10px 0 4px; }
+  input, select {
+    width: 100%; min-width: 0; font: inherit; color: var(--text); background: var(--field);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px;
+  }
+  button {
+    font: inherit; color: var(--text); background: var(--btn); cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 14px; white-space: nowrap;
+  }
+  button:hover:not(:disabled) { background: var(--btn-hover); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+                   font-weight: 600; width: 100%; margin-top: 14px; padding: 10px; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13.5px; }
+  .status { margin-top: 10px; min-height: 1.5em; }
+  .status:empty { display: none; }
+  .ok { color: var(--ok); }
+  .bad { color: var(--bad); }
+  .status a { display: block; font-weight: 600; color: var(--accent); margin-top: 4px; word-break: break-all; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1><img src="/static/icon.png" alt=""><span id="title"></span></h1>
+  <p class="dim" id="intro"></p>
+
+  <div class="card" id="wifiSummary" hidden>
+    <h2 id="wifiTitle"></h2>
+    <div class="bar"><span id="current"></span>
+      <button id="changeBtn"></button></div>
+  </div>
+  <div id="wifiForm">
+    <div class="card">
+      <div class="bar"><span class="dim" id="scanState"></span>
+        <button id="scanBtn"></button></div>
+      <div id="list"></div>
+    </div>
+    <div class="card">
+      <label for="ssid" id="ssidLabel"></label>
+      <input id="ssid" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <label for="password" id="passwordLabel"></label>
+      <input id="password" type="password" maxlength="64" autocomplete="off">
+      <label for="hostname" id="hostnameLabel"></label>
+      <input id="hostname" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <p class="dim" id="hostnameHint"></p>
+      <button class="primary" id="connectBtn"></button>
+      <div class="status" id="result"></div>
+    </div>
+  </div>
+
+  <div class="card" id="zoneCard" hidden>
+    <h2 id="zoneTitle"></h2>
+    <div class="bar"><select id="zone"></select>
+      <button id="zoneSave"></button></div>
+    <p class="dim" id="zoneNote"></p>
+    <div class="status" id="zoneStatus"></div>
+  </div>
+
+  <div class="card" id="firmwareCard" hidden>
+    <h2 id="firmwareTitle"></h2>
+    <div class="bar"><span class="mono" id="firmware"></span>
+      <button id="firmwareBtn"></button>
+      <input id="firmwareFile" type="file" accept=".bin" hidden></div>
+    <p class="dim" id="firmwareNote"></p>
+    <div class="status" id="firmwareStatus"></div>
+  </div>
+
+  <p id="backLine" hidden><a href="/" id="back"></a></p>
+</main>
+<script src="/static/i18n.js"></script>
+<script src="/static/zones.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const FALLBACK = "zh-CN";
+const LOCK = `<svg class="lock" viewBox="0 0 24 24" aria-hidden="true">`
+  + `<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>`;
+const HOSTNAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,30}[A-Za-z0-9])?$/;
+let lang = FALLBACK;
+let hostname = "";
+let defaultHostname = "";
+// On the setup hotspot the page is only for joining a network; everything else
+// waits until the board is on the home network.
+let provisioning = true;
+let watching = null;
+
+const choice = localStorage.getItem("theme") || "auto";
+document.documentElement.dataset.theme = choice !== "auto" ? choice
+  : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+
+function t(key, params) {
+  const table = window.LOCALES[lang] || window.LOCALES[FALLBACK];
+  const template = table[key] ?? window.LOCALES[FALLBACK][key] ?? key;
+  return template.replace(/\{(\w+)\}/g, (_, name) => String(params?.[name] ?? "?"));
+}
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const detail = body.detail && body.detail.event
+      ? t(body.detail.event, body.detail.params) : String(response.status);
+    throw new Error(detail);
+  }
+  return response.json();
+}
+
+function chrome() {
+  document.documentElement.lang = lang;
+  const title = t(provisioning ? "wifi.title" : "config.title");
+  document.title = title;
+  $("title").textContent = title;
+  $("intro").textContent = t(provisioning ? "wifi.intro" : "config.intro");
+  $("wifiTitle").textContent = t("settings.wifi");
+  $("changeBtn").textContent = t("settings.wifiChange");
+  $("scanBtn").textContent = t("wifi.scan");
+  $("ssidLabel").textContent = t("wifi.ssid");
+  $("passwordLabel").textContent = t("wifi.password");
+  $("hostnameLabel").textContent = t("wifi.hostname");
+  $("hostnameHint").textContent = t("wifi.hostnameHint");
+  $("connectBtn").textContent = t("wifi.connect");
+  $("zoneTitle").textContent = t("settings.timezone");
+  $("zoneSave").textContent = t("settings.save");
+  $("zoneNote").textContent = t("settings.timezoneNote");
+  $("firmwareTitle").textContent = t("settings.firmware");
+  $("firmwareBtn").textContent = t("settings.firmwareUpload");
+  $("firmwareNote").textContent = t("settings.firmwareNote");
+  $("back").textContent = t("wifi.back");
+}
+
+function addresses(status) {
+  const links = [`http://${hostname}.local:8787/`].concat(status.ip ? [`http://${status.ip}:8787/`] : []);
+  return links.map((url) => `<a href="${esc(url)}">${esc(url)}</a>`).join("");
+}
+
+function show(id, tone, html) {
+  $(id).className = "status " + tone;
+  $(id).innerHTML = html;
+}
+
+function showCurrent(status) {
+  $("current").textContent = !status.ssid ? t("settings.wifiNone")
+    : status.state === "connected" ? t("settings.wifiStatus", status)
+    : t("settings.wifiDown", status);
+}
+
+// ---------------------------------------------------------------- wifi
+
+async function scan() {
+  $("scanBtn").disabled = true;
+  $("scanState").textContent = t("wifi.scanning");
+  try {
+    const { networks } = await api("/api/wifi/scan");
+    $("list").innerHTML = networks.map((net) => {
+      const bars = net.rssi >= -60 ? "▂▄▆█" : net.rssi >= -72 ? "▂▄▆" : net.rssi >= -84 ? "▂▄" : "▂";
+      return `<button data-ssid="${esc(net.ssid)}"><span>${esc(net.ssid)}</span>`
+        + `<span class="sig">${net.secure ? LOCK : ""}${bars}</span></button>`;
+    }).join("");
+    $("scanState").textContent = networks.length ? "" : t("wifi.none");
+  } catch (error) {
+    $("scanState").textContent = t("wifi.none");
+  } finally {
+    $("scanBtn").disabled = false;
+  }
+}
+
+// After a join the phone can lose the hotspot for a moment: the radio follows the
+// home network onto its channel. Missed polls are expected, not an error.
+function watch(ssid) {
+  clearInterval(watching);
+  let missed = 0;
+  watching = setInterval(async () => {
+    let status;
+    try {
+      status = await api("/api/wifi");
+      missed = 0;
+    } catch (error) {
+      if (++missed === 4) show("result", "", esc(t("wifi.dropped")) + addresses({}));
+      return;
+    }
+    showCurrent(status);
+    if (status.state === "connected" && status.ssid === ssid) {
+      clearInterval(watching);
+      show("result", "ok", esc(t("wifi.connected", { ssid })) + addresses(status));
+      $("connectBtn").disabled = false;
+    } else if (status.state === "failed" && status.reason) {
+      clearInterval(watching);
+      show("result", "bad", esc(t("wifi." + status.reason, { ssid })));
+      $("connectBtn").disabled = false;
+    }
+  }, 1500);
+}
+
+async function connect() {
+  const ssid = $("ssid").value;
+  const password = $("password").value;
+  if (!ssid.trim()) {
+    $("ssid").focus();
+    return;
+  }
+  if (password && password.length < 8) {
+    show("result", "bad", esc(t("wifi.shortPassword")));
+    return;
+  }
+  const name = $("hostname").value.trim();
+  if (name && !HOSTNAME.test(name)) {
+    show("result", "bad", esc(t("wifi.badHostname")));
+    $("hostname").focus();
+    return;
+  }
+  $("connectBtn").disabled = true;
+  show("result", "", esc(t("wifi.connecting", { ssid })));
+  try {
+    await api("/api/wifi", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ssid, password, hostname: name }),
+    });
+    hostname = name || defaultHostname;
+    $("hostname").value = hostname;
+    watch(ssid);
+  } catch (error) {
+    show("result", "bad", esc(t("wifi.failed", { ssid })));
+    $("connectBtn").disabled = false;
+  }
+}
+
+function openWifiForm() {
+  $("wifiForm").hidden = false;
+  $("changeBtn").hidden = true;
+  scan();
+}
+
+// ---------------------------------------------------------------- time zone
+
+async function saveZone() {
+  const zone = $("zone").value;
+  $("zoneSave").disabled = true;
+  try {
+    await api("/api/timezone", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ zone, timezone: window.TIMEZONES[zone] }),
+    });
+    show("zoneStatus", "ok", esc(t("config.zoneSaved")));
+  } catch (error) {
+    show("zoneStatus", "bad", esc(t("settings.rejected", { detail: error.message })));
+  } finally {
+    $("zoneSave").disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------- firmware
+
+function uploadFirmware(file) {
+  const button = $("firmwareBtn");
+  const failed = (text) => {
+    show("firmwareStatus", "bad", esc(text));
+    button.disabled = false;
+  };
+  button.disabled = true;
+  show("firmwareStatus", "", esc(t("settings.firmwareUploading", { percent: 0 })));
+  const request = new XMLHttpRequest();
+  request.open("POST", "/api/ota");
+  request.upload.onprogress = (event) => {
+    if (!event.lengthComputable) return;
+    show("firmwareStatus", "", esc(t("settings.firmwareUploading",
+      { percent: Math.floor(event.loaded * 100 / event.total) })));
+  };
+  request.onerror = () => failed(t("app.offline", { error: "network" }));
+  request.onload = () => {
+    let body = {};
+    try { body = JSON.parse(request.responseText); } catch (error) { /* not JSON */ }
+    if (request.status !== 200) {
+      failed(body.detail && body.detail.event
+        ? t(body.detail.event, body.detail.params) : request.statusText);
+      return;
+    }
+    show("firmwareStatus", "", esc(t("settings.firmwareRestarting")));
+    waitForRestart();
+  };
+  request.send(file);
+}
+
+// The old firmware still answers for a moment after the upload, so give it time
+// to go down before taking an answer as the new one coming up.
+async function waitForRestart() {
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+  const giveUp = Date.now() + 120000;
+  while (Date.now() < giveUp) {
+    try {
+      const settings = await api("/api/settings", { signal: AbortSignal.timeout(3000) });
+      show("firmwareStatus", "ok",
+        esc(t("settings.firmwareDone", { version: settings.firmware.version })));
+      setTimeout(() => location.reload(), 1500);
+      return;
+    } catch (error) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+  show("firmwareStatus", "bad", esc(t("settings.firmwareGone")));
+  $("firmwareBtn").disabled = false;
+}
+
+// ---------------------------------------------------------------- wiring
+
+$("list").onclick = (event) => {
+  const button = event.target.closest("button[data-ssid]");
+  if (!button) return;
+  $("ssid").value = button.dataset.ssid;
+  $("password").value = "";
+  $("password").focus();
+};
+$("scanBtn").onclick = scan;
+$("connectBtn").onclick = connect;
+$("changeBtn").onclick = openWifiForm;
+$("zoneSave").onclick = saveZone;
+$("firmwareBtn").onclick = () => $("firmwareFile").click();
+$("firmwareFile").onchange = (event) => {
+  const file = event.target.files[0];
+  event.target.value = "";
+  if (file) uploadFirmware(file);
+};
+$("password").onkeydown = (event) => { if (event.key === "Enter") connect(); };
+$("hostname").onkeydown = (event) => { if (event.key === "Enter") connect(); };
+$("hostname").oninput = () => {
+  $("hostname").value = $("hostname").value.replace(/[^A-Za-z0-9-]/g, "");
+};
+
+(async () => {
+  let status = {};
+  try {
+    status = await api("/api/wifi");
+    lang = window.LOCALES[status.language] ? status.language : FALLBACK;
+    provisioning = status.hotspot !== false;
+    hostname = status.hostname;
+    defaultHostname = status.default_hostname;
+    $("hostname").value = hostname;
+    $("hostname").placeholder = defaultHostname;
+    $("ssid").value = status.ssid || "";
+  } catch (error) {}
+  chrome();
+  showCurrent(status);
+  if (provisioning) {
+    scan();
+    return;
+  }
+  $("wifiSummary").hidden = false;
+  $("wifiForm").hidden = true;
+  $("zoneCard").hidden = $("firmwareCard").hidden = $("backLine").hidden = false;
+  try {
+    const [settings] = await Promise.all([api("/api/settings"), loadZones()]);
+    zoneOptions($("zone"), settings.zone, lang);
+    const firmware = settings.firmware || {};
+    $("firmware").textContent = `${firmware.version} · ${firmware.chip}`;
+  } catch (error) {
+    show("zoneStatus", "bad", esc(t("app.offline", { error: error.message })));
+  }
+})();
+</script>
+</body>
+</html>

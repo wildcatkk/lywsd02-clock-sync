@@ -30,6 +30,12 @@ def save(path, data):
         handle.close()
         os.replace(handle.name, path)
     except BaseException:
-        handle.close()
-        os.unlink(handle.name)
+        try:
+            handle.close()
+        except BaseException:
+            pass
+        try:
+            os.unlink(handle.name)
+        except BaseException:
+            pass
         raise

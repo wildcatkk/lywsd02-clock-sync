@@ -209,9 +209,16 @@
 
   .nodes { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
   .nodecard {
+    display: block; color: var(--text); text-decoration: none;
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 9px 13px; min-width: 150px; box-shadow: var(--card-shadow);
+    padding: 12px 16px; min-width: 170px; min-height: 64px; box-shadow: var(--card-shadow);
+    transition: background-color .15s, border-color .15s;
   }
+  a.nodecard { cursor: pointer; }
+  a.nodecard:hover, a.nodecard:focus-visible {
+    background: var(--hover); border-color: var(--accent);
+  }
+  a.nodecard:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   /* The page you are looking at is one node among equals; say which one. */
   .nodecard.own { border-color: var(--accent); }
   .nodecard.down { opacity: .55; }
@@ -242,7 +249,7 @@
     font-size: 11.5px; font-weight: 600; color: var(--dim); text-transform: uppercase;
     margin: 20px 0 10px; letter-spacing: .6px;
   }
-  .sheet h3:first-child { margin-top: 0; }
+  .sheetbody > h3:first-child { margin-top: 0; }
   .sheethead, .sheetfoot { display: flex; align-items: center; gap: 10px; padding: 14px 18px; }
   .sheethead { border-bottom: 1px solid var(--line); }
   .sheetfoot { border-top: 1px solid var(--line); }
@@ -250,6 +257,7 @@
   .row { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; }
   .row > span:first-child { flex: 1; color: var(--dim); }
   .row input, .row select { width: 152px; }
+  .row #setTimeServer { width: 270px; max-width: 65%; }
   .row input {
     font: inherit; color: var(--text); background: var(--field);
     border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px;
@@ -271,6 +279,10 @@
   }
   .row textarea:hover { border-color: var(--btn-line); }
   .note { color: var(--dim); font-size: 12px; line-height: 1.6; margin: 12px 0 0; }
+  .note + .note { margin-top: 6px; }
+  .note:empty { display: none; }
+  .row a { color: var(--accent); text-decoration: none; white-space: nowrap; }
+  .row a:hover { text-decoration: underline; }
   .failure { color: var(--bad); font-size: 12.5px; }
 </style>
 <script>
@@ -343,12 +355,20 @@
         <textarea id="setPeers" rows="3" spellcheck="false"></textarea></label>
       <p class="note" id="setNodeNote"></p>
 
+      <div id="netGroup">
       <h3 id="setGroupNet"></h3>
       <label class="row"><span id="setHostLabel"></span>
         <input id="setHost" maxlength="64" spellcheck="false"></label>
       <label class="row"><span id="setPortLabel"></span>
         <input id="setPort" type="number" min="1" max="65535"></label>
       <p class="note" id="setNetNote"></p>
+      </div>
+
+      <div id="espGroup" hidden>
+      <h3 id="setGroupDevice"></h3>
+      <div class="row"><span id="setDeviceLabel"></span>
+        <a href="/config" id="setDeviceLink"></a></div>
+      </div>
 
       <h3 id="setGroupSchedule"></h3>
       <label class="row"><span id="setModeLabel"></span>
@@ -358,6 +378,11 @@
       <label class="row"><span id="setTimeLabel"></span>
         <span class="pair"><input id="setHour" type="number" min="0" max="23">:<input
           id="setMinute" type="number" min="0" max="59"></span></label>
+
+      <h3 id="setGroupTime"></h3>
+      <label class="row"><span id="setTimeServerLabel"></span>
+        <select id="setTimeServer"></select></label>
+      <p class="note" id="setTimeServerNote"></p>
 
       <h3 id="setGroupRadio"></h3>
       <label class="row"><span id="setScanLabel"></span>
@@ -380,12 +405,19 @@
 </div>
 
 <script src="/static/i18n.js"></script>
+<script src="/static/zones.js"></script>
 <script>
 const COLUMNS = ["label", "node", "address", "model", "deviceTime", "drift", "temperature",
                  "humidity", "battery", "signal", "auto", "actions"];
 const SCHEDULE_MODES = ["weekly", "daily", "off"];
 const WEEKDAYS = ["0", "1", "2", "3", "4", "5", "6"];
 const THEMES = ["auto", "dark", "light"];
+// "" is this machine's own clock.
+const TIME_SERVERS = ["", "ntp.aliyun.com", "ntp.tencent.com", "ntp.ntsc.ac.cn",
+  "cn.pool.ntp.org", "pool.ntp.org", "time.windows.com", "time.apple.com",
+  "time.google.com", "time.cloudflare.com"];
+const TIME_SERVER_OWNERS = { "ntp.aliyun.com": "aliyun", "ntp.tencent.com": "tencent",
+  "ntp.ntsc.ac.cn": "ntsc" };
 const FALLBACK = "zh-CN";
 const PENCIL = `<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true">`
   + `<path d="M4.5 19.5l.8-4 9.9-9.9a1.7 1.7 0 0 1 2.4 0l.8.8a1.7 1.7 0 0 1 0 2.4l-9.9 9.9z"/>`
@@ -398,6 +430,15 @@ let theme = localStorage.getItem("theme") || "auto";
 let editing = null;
 let devices = [];
 let latest = null;
+const LOG_SOURCE_LIMIT = 11;
+const LOG_SOURCE_LINES = 60;
+const LOG_DISPLAY_LINES = 150;
+const logSources = new Map();
+let logsPolling = null;
+let logsClearing = false;
+// The ESP32 build serves this same page and says so in /api/state.
+let esp = false;
+let timezoneSent = false;
 
 const systemDark = matchMedia("(prefers-color-scheme: dark)");
 
@@ -418,9 +459,9 @@ const esc = (value) => String(value ?? "").replace(/[&<>"']/g,
 // The page is redrawn every two seconds whether or not anything moved, and the log
 // pane alone costs over twenty milliseconds of parsing, layout and paint at its
 // full length. Building the string is the cheap part, so build it and throw it away
-// when it is the one already on screen. Relative times change on their own, so this
-// never goes stale: when "3 minutes ago" becomes "4", the string differs and it is
-// drawn. Nothing reads innerHTML back, which would serialise the DOM to compare it.
+// when it is the one already on screen. Nothing reads innerHTML back, which would
+// serialise the DOM to compare it. Relative times are left out of the string (see
+// since()), or a fresh "5 seconds ago" would rebuild the table on every poll.
 const painted = {};
 
 function paint(id, html) {
@@ -435,6 +476,27 @@ function write(id, text) {
   painted[id] = text;
   $(id).textContent = text;
   return true;
+}
+
+// Swapping one row at a time leaves the row under the pointer alone unless it is
+// the one that changed.
+function paintRows(rows) {
+  const body = $("rows");
+  const before = painted.rows || [];
+  painted.rows = rows;
+  if (rows.length !== before.length) {
+    body.innerHTML = rows.join("");
+    return true;
+  }
+  let drew = false;
+  rows.forEach((row, i) => {
+    if (row === before[i]) return;
+    const holder = document.createElement("tbody");
+    holder.innerHTML = row;
+    body.rows[i].replaceWith(holder.firstElementChild);
+    drew = true;
+  });
+  return drew;
 }
 
 function t(key, params) {
@@ -467,6 +529,20 @@ function ago(unix) {
   return t("time.daysAgo", { count: Math.round(seconds / 86400) });
 }
 
+// A rebuilt row loses :hover and fades its background back in, so the row under the
+// pointer flashed every poll. The text is filled in by tick() instead.
+function since(unix, template) {
+  return `<span data-at="${esc(unix)}"${template ? ` data-tpl="${template}"` : ""}></span>`;
+}
+
+function tick() {
+  for (const node of document.querySelectorAll("[data-at]")) {
+    const text = ago(Number(node.dataset.at));
+    const shown = node.dataset.tpl ? t(node.dataset.tpl, { ago: text }) : text;
+    if (node.textContent !== shown) node.textContent = shown;
+  }
+}
+
 function labelOf(device) {
   return device.label || t("device.defaultLabel", { tail: device.key.slice(-4) });
 }
@@ -485,7 +561,7 @@ function signalCell(rssi, seenAt) {
   const level = rssi >= -60 ? 4 : rssi >= -72 ? 3 : rssi >= -84 ? 2 : 1;
   const tone = level >= 3 ? "ok" : level === 2 ? "warn" : "bad";
   return `<span class="pill ${tone}">${"▌".repeat(level)}</span>`
-    + `<span class="sub">${rssi} dBm · ${esc(ago(seenAt))}</span>`;
+    + `<span class="sub">${rssi} dBm · ${since(seenAt)}</span>`;
 }
 
 // Which node is nearest, and the option to overrule it. "Automatic" names the node
@@ -514,6 +590,15 @@ function nodeCell(device) {
     + `${device.node_online ? "" : " · " + esc(t("node.offline"))}</span>`;
 }
 
+function nodeHref(node) {
+  try {
+    const url = new URL(node.own ? location.origin : node.url);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function nodeStrip(state) {
   paint("nodes", (state.nodes || []).map((node) => {
     const dot = node.busy ? "working" : node.online ? "up" : "";
@@ -523,10 +608,14 @@ function nodeStrip(state) {
     const line = node.busy ? t(node.busy.event, node.busy.params)
       : node.online ? t("node.devices", { count: node.devices })
       : t("node.lastError", { error: why });
-    return `<div class="nodecard${node.own ? " own" : ""}${node.online ? "" : " down"}">
+    const href = nodeHref(node);
+    const tag = href ? "a" : "div";
+    const link = href ? ` href="${esc(href)}" target="_blank" rel="noopener noreferrer"`
+      + ` title="${esc(t("node.open", { node: node.name }))}"` : "";
+    return `<${tag} class="nodecard${node.own ? " own" : ""}${node.online ? "" : " down"}"${link}>
       <div><span class="dot ${dot}"></span><b>${esc(node.name)}</b>
         ${node.own ? `<span class="tag">${esc(t("node.thisOne"))}</span>` : ""}</div>
-      <span class="sub">${esc(line)}</span></div>`;
+      <span class="sub">${esc(line)}</span></${tag}>`;
   }).join(""));
 }
 
@@ -547,6 +636,7 @@ function renderChrome() {
     + `${esc(window.LOCALES[code]["lang.name"])}</option>`).join("");
   $("langPicker").title = t("settings.language");
   renderSettingsChrome();
+  renderLogs();
 }
 
 function options(select, values, labelOf) {
@@ -560,7 +650,7 @@ function renderSettingsChrome() {
   $("setTitle").textContent = t("settings.title");
   $("setGroupUi").textContent = t("settings.groupUi");
   $("setThemeLabel").textContent = t("settings.theme");
-  $("setUiNote").textContent = t("settings.uiNote");
+  $("setUiNote").textContent = t(esp ? "settings.uiNoteEsp" : "settings.uiNote");
   $("setGroupNode").textContent = t("settings.groupNode");
   $("setClusterLabel").textContent = t("settings.cluster");
   $("setDiscoveryLabel").textContent = t("settings.discovery");
@@ -571,6 +661,9 @@ function renderSettingsChrome() {
   $("setHostLabel").textContent = t("settings.host");
   $("setPortLabel").textContent = t("settings.port");
   $("setNetNote").textContent = t("settings.networkNote");
+  $("setGroupDevice").textContent = t("settings.groupDevice");
+  $("setDeviceLabel").textContent = t("settings.deviceConfig");
+  $("setDeviceLink").textContent = t("settings.deviceConfigOpen");
   $("setGroupSchedule").textContent = t("settings.groupSchedule");
   $("setModeLabel").textContent = t("settings.mode");
   $("setWeekdayLabel").textContent = t("settings.weekday");
@@ -585,6 +678,25 @@ function renderSettingsChrome() {
   options($("setTheme"), THEMES, (name) => t("settings.theme." + name));
   options($("setMode"), SCHEDULE_MODES, (mode) => t("settings.mode." + mode));
   options($("setWeekday"), WEEKDAYS, (day) => t("weekday." + day));
+  $("setGroupTime").textContent = t("settings.groupTime");
+  $("setTimeServerLabel").textContent = t("settings.timeServer");
+  $("setTimeServerNote").textContent = t(esp ? "settings.timeServerNoteEsp"
+                                             : "settings.timeServerNote");
+  fillTimeServers($("setTimeServer").value);
+}
+
+function timeServerLabel(host) {
+  if (!host) return t("settings.timeServer.local");
+  const owner = TIME_SERVER_OWNERS[host];
+  return owner ? t("settings.timeServer.named", { host, owner: t("settings.timeServer." + owner) })
+               : host;
+}
+
+// A server typed into config.json by hand still shows up, as one more choice.
+function fillTimeServers(chosen) {
+  const values = TIME_SERVERS.includes(chosen) ? TIME_SERVERS : [...TIME_SERVERS, chosen];
+  options($("setTimeServer"), values, timeServerLabel);
+  $("setTimeServer").value = chosen;
 }
 
 function syncScheduleFields() {
@@ -615,10 +727,13 @@ function fillSettings(settings) {
   $("setWeekday").value = String(schedule.weekday);
   $("setHour").value = schedule.hour;
   $("setMinute").value = schedule.minute;
+  fillTimeServers(settings.time_server || "");
   $("setScan").value = radio.scan_timeout;
   $("setConnect").value = radio.connect_timeout;
   $("setEnv").value = radio.env_timeout;
   $("setRetries").value = radio.retries;
+  $("netGroup").hidden = esp;
+  $("espGroup").hidden = !esp;
   syncScheduleFields();
   syncNodeFields();
 }
@@ -655,6 +770,7 @@ async function saveSettings() {
       hour: Number($("setHour").value),
       minute: Number($("setMinute").value),
     },
+    time_server: $("setTimeServer").value,
     bluetooth: {
       scan_timeout: Number($("setScan").value),
       connect_timeout: Number($("setConnect").value),
@@ -662,7 +778,6 @@ async function saveSettings() {
       retries: Number($("setRetries").value),
     },
   };
-
   $("setSave").disabled = true;
   try {
     const result = await api("/api/settings", {
@@ -685,7 +800,7 @@ async function saveSettings() {
 function renderRows() {
   $("empty").style.display = devices.length ? "none" : "block";
   const locked = Boolean(latest && latest.lock);
-  const drew = paint("rows", devices.map((device) => {
+  const drew = paintRows(devices.map((device) => {
     const label = editing === device.key
       ? `<div class="edit"><input id="labelInput" value="${esc(labelOf(device))}" maxlength="40">
            <button class="small" data-act="save" data-key="${device.key}">${esc(t("device.save"))}</button>
@@ -703,8 +818,8 @@ function renderRows() {
       <td class="mono">${esc(device.address)}</td>
       <td>${esc(device.model || "—")}<span class="sub">${esc(device.firmware || "")}</span></td>
       <td class="num">${esc(clock(device.device_time))}
-        <span class="sub">${esc(device.updated_at
-          ? t("device.readAt", { ago: ago(device.updated_at) }) : t("device.neverRead"))}</span></td>
+        <span class="sub">${device.updated_at
+          ? since(device.updated_at, "device.readAt") : esc(t("device.neverRead"))}</span></td>
       <td class="num">${driftCell(device.drift)}</td>
       <td class="num">${device.temperature != null ? esc(device.temperature) + " °C" : "—"}</td>
       <td class="num">${device.humidity != null ? esc(device.humidity) + " %" : "—"}</td>
@@ -720,7 +835,8 @@ function renderRows() {
           ${idle ? "" : "disabled"}>${esc(t("device.sync"))}</button>
       </td>
     </tr>`;
-  }).join(""));
+  }));
+  tick();
 
   // Only when the row was actually rebuilt: otherwise the caret would jump back to
   // the start of the field on every poll.
@@ -755,13 +871,68 @@ function renderState() {
     : esc(t("app.idle")));
   $("scanBtn").disabled = Boolean(lock);
   $("readBtn").disabled = Boolean(lock);
+}
 
-  const drew = paint("logs", state.logs.map((entry) =>
-    `<div><time>${new Date(entry.at * 1000).toLocaleTimeString(lang, { hour12: false })}</time>`
+function logCursors() {
+  return Object.fromEntries(Array.from(logSources, ([id, source]) =>
+    [id, { boot: source.boot, after: source.cursor }]));
+}
+
+function updateLogSources(response) {
+  if (!response || !Array.isArray(response.sources)) return false;
+  const present = new Set();
+  let changed = false;
+  for (const source of response.sources) {
+    if (present.size >= LOG_SOURCE_LIMIT) break;
+    if (!source || typeof source.id !== "string" || !source.id || present.has(source.id)
+        || typeof source.boot !== "string" || !/^[0-9a-f]{16}$/i.test(source.boot)
+        || !Number.isSafeInteger(source.cursor) || source.cursor < 0
+        || !Array.isArray(source.logs)) continue;
+    present.add(source.id);
+    const previous = logSources.get(source.id);
+    const sameBoot = previous && previous.boot === source.boot;
+    const name = String(source.name || source.id);
+    const logs = sameBoot ? previous.logs.slice() : [];
+    const seen = new Set(logs.map((entry) => entry.id));
+    const after = sameBoot ? previous.cursor : -1;
+    let added = false;
+    for (const entry of source.logs.slice(0, 20)) {
+      if (!entry || !Number.isSafeInteger(entry.id) || entry.id < 0
+          || entry.id <= after || entry.id > source.cursor || seen.has(entry.id)
+          || !Number.isFinite(entry.at) || typeof entry.event !== "string") continue;
+      seen.add(entry.id);
+      logs.push({ id: entry.id, at: entry.at, event: entry.event, params: entry.params });
+      added = true;
+    }
+    if (added || (previous && previous.logs.length && (!sameBoot || previous.name !== name))) {
+      changed = true;
+    }
+    // Keep the newest IDs even if the node's wall clock moved backwards.
+    logSources.set(source.id, {
+      name, boot: source.boot, cursor: source.cursor,
+      logs: logs.sort((left, right) => left.id - right.id).slice(-LOG_SOURCE_LINES),
+    });
+  }
+  for (const [id, source] of logSources) {
+    if (present.has(id)) continue;
+    if (source.logs.length) changed = true;
+    logSources.delete(id);
+  }
+  return changed;
+}
+
+function renderLogs() {
+  const entries = [];
+  for (const [id, source] of logSources) {
+    for (const entry of source.logs) entries.push({ ...entry, source: id, node: source.name });
+  }
+  entries.sort((left, right) => left.at - right.at
+    || left.source.localeCompare(right.source) || left.id - right.id);
+  const drew = paint("logs", entries.slice(-LOG_DISPLAY_LINES).map((entry) =>
+    `<div><time>${esc(new Date(entry.at * 1000).toLocaleTimeString(lang, { hour12: false }))}</time>`
     + `<span class="tag">${esc(entry.node)}</span>`
     + `${esc(t("log." + entry.event, logParams(entry.params)))}</div>`).join(""));
-  // Reading scrollHeight forces a layout, so only do it when there is a new line
-  // to scroll down to.
+  // Reading scrollHeight forces a layout, so only do it when the pane changed.
   if (drew) $("logs").scrollTop = $("logs").scrollHeight;
 }
 
@@ -780,6 +951,44 @@ async function api(path, options) {
     throw new Error(detail || response.statusText);
   }
   return response.json();
+}
+
+function refreshLogs() {
+  if (document.hidden || logsClearing || logsPolling) return logsPolling || Promise.resolve();
+  logsPolling = (async () => {
+    try {
+      const response = await api("/api/logs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(logCursors()),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!logsClearing && updateLogSources(response)) renderLogs();
+    } catch (_) {
+      // Logs are optional: retain the cache and never mark a healthy node offline.
+    }
+  })().finally(() => { logsPolling = null; });
+  return logsPolling;
+}
+
+async function clearLogs() {
+  if (logsClearing) return;
+  logsClearing = true;
+  $("clearLogsBtn").disabled = true;
+  try {
+    await api("/api/logs/clear", { method: "POST" });
+    logSources.clear();
+    renderLogs();
+    // Discard any pre-clear reply before requesting the new tail with {}.
+    if (logsPolling) await logsPolling;
+  } catch (error) {
+    alert(error.message);
+    return;
+  } finally {
+    logsClearing = false;
+    $("clearLogsBtn").disabled = false;
+  }
+  refreshLogs();
 }
 
 // A slow peer can hold /api/state past the two-second tick; piling a second request
@@ -805,6 +1014,7 @@ function poll() {
 async function refreshState() {
   try {
     const state = await api("/api/state");
+    esp = state.platform === "esp32";
     if (state.language !== lang) {
       // The language lives in config.json, so any browser can be the one that changed it.
       lang = window.LOCALES[state.language] ? state.language : FALLBACK;
@@ -816,10 +1026,24 @@ async function refreshState() {
     // Redrawing the table would shut an open dropdown or discard a half-typed label.
     const busyField = document.activeElement;
     if (!editing && !(busyField && busyField.classList.contains("pin"))) renderRows();
+    else tick();
+    if (esp && !state.zone && !timezoneSent) {
+      timezoneSent = true;
+      loadZones().then(() => {
+        const zone = browserZone();
+        return api("/api/timezone", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ zone, timezone: window.TIMEZONES[zone] }),
+        });
+      }).catch(() => { timezoneSent = false; });
+    }
   } catch (error) {
     paint("status",
       `<span style="color:var(--bad)">${esc(t("app.offline", { error: error.message }))}</span>`);
+    return;
   }
+  refreshLogs();
 }
 
 $("langPicker").onchange = async (event) => {
@@ -840,8 +1064,7 @@ $("scanBtn").onclick = () => api("/api/scan", { method: "POST" })
 $("readBtn").onclick = () => api("/api/read", { method: "POST" })
   .catch((error) => alert(error.message)).then(poll);
 
-$("clearLogsBtn").onclick = () => api("/api/logs/clear", { method: "POST" })
-  .catch((error) => alert(error.message)).then(poll);
+$("clearLogsBtn").onclick = clearLogs;
 
 $("settingsBtn").onclick = openSettings;
 $("setSave").onclick = saveSettings;

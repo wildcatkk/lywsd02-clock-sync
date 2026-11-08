@@ -1,0 +1,8 @@
+# 复制一份改名为 wifi.txt，填好后运行 flash.bat，就不用在窗口里输入 WiFi 了。
+# 等号后面原样填写，不要加引号或多余空格。只支持 2.4 GHz 网络；开放网络 password 留空。
+# 用完可以删掉 wifi.txt，里面存着密码。
+#
+# Copy this file as wifi.txt and fill it in before running flash.bat.
+# Values are used exactly as written after "=". 2.4 GHz only; leave password empty for an open network.
+ssid=
+password=

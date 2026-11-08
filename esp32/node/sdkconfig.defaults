@@ -1,0 +1,32 @@
+# Settings shared by every supported chip. Chip-specific ones live in
+# sdkconfig.defaults.<target> and are layered on top by `idf.py set-target`.
+
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# A new image has to prove it can reach the network before it is kept; otherwise
+# the next reboot goes back to the previous one. The board has no Boot button.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# The clocks only ever need a central that scans and connects.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_SECURITY_ENABLE=n
+CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
+
+# Browsers send long cookie and user-agent headers; the default 512 rejects them.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+CONFIG_HTTPD_MAX_URI_LEN=256
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+
+# Not needed: the self-test reads the serial line itself.
+CONFIG_MDNS_ENABLE_CONSOLE_CLI=n

@@ -17,6 +17,24 @@ if [ "$1" = configure ]; then
         systemctl restart "$UNIT"
     fi
 
+    # Drop what an earlier install opened first: after a port change it would stay
+    # open for good, since the record below only ever names the latest port.
+    if [ -f "$DATA/.firewall" ]; then
+        read -r tool old < "$DATA/.firewall" || true
+        case "$tool" in
+        ufw)
+            ufw delete allow "$old/tcp" >/dev/null 2>&1 || true
+            ufw delete allow "$BEACON/udp" >/dev/null 2>&1 || true
+            ;;
+        firewalld)
+            firewall-cmd --permanent --remove-port="$old/tcp" >/dev/null 2>&1 || true
+            firewall-cmd --permanent --remove-port="$BEACON/udp" >/dev/null 2>&1 || true
+            firewall-cmd --reload >/dev/null 2>&1 || true
+            ;;
+        esac
+        rm -f "$DATA/.firewall"
+    fi
+
     # Only a firewall that is actually on gets a rule; postrm reads back what was opened.
     if command -v ufw >/dev/null 2>&1 && LC_ALL=C ufw status 2>/dev/null | grep -q "Status: active"; then
         ufw allow "$port/tcp" >/dev/null
