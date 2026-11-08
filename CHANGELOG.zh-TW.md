@@ -2,6 +2,13 @@
 
 [简体中文](CHANGELOG.zh-CN.md) | 繁體中文 | [English](CHANGELOG.md)
 
+## [2.0.1] - 2026-11-08
+
+### 修正
+
+- 節點（多見於 ESP32）偶爾被報「連不上了」，兩秒後又「發現節點」。WiFi 有時會幾秒收不到回應，現在連續 10 秒沒有回應才算離線，期間每 2 秒再詢問一次
+- 2.0.1 和 2.0.0 節點可以混用，但建議所有節點都升級，兩個方向才都能生效
+
 ## [2.0.0] - 2026-11-08
 
 ### 升級須知
@@ -42,5 +49,6 @@
 
 首次發布：Windows 安裝程式和 Linux deb，網頁管理、定時自動校時、多機叢集。
 
+[2.0.1]: https://github.com/wildcatkk/lywsd02-clock-sync/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/wildcatkk/lywsd02-clock-sync/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/wildcatkk/lywsd02-clock-sync/releases/tag/v1.0.0

@@ -290,6 +290,9 @@ POLL_ALONE = 300.0           # no peer has ever answered; just keep listening
 WATCH_WINDOW = 15.0          # how long one /api/state counts as "being watched"
 FRESH_ENOUGH = 3.0           # a probe this recent needs no repeat
 STATE_TIMEOUT = 1.5
+# Wi-Fi drops replies for a few seconds at a time, so a node counts as gone only
+# after it has stayed silent this long; until then it is asked again every POLL_WATCHED.
+SILENCE_GRACE = 10.0
 ACTION_TIMEOUT = 8.0
 # The socket times out on the same deadline the caller waits for, so without a
 # little slack a plain network timeout loses that race and reads as a local fault.
@@ -499,7 +502,8 @@ class Cluster:
                 del self.peers[oldest["url"]]
             peer = {"url": url, "origin": origin, "node_id": None, "name": None,
                     "last_beacon": 0.0, "probed": 0.0, "attempted": 0.0,
-                    "down_since": time.monotonic(), "online": False, "state": None,
+                    "down_since": time.monotonic(), "silent_since": None,
+                    "online": False, "state": None,
                     "error": None, "logs": [], "log_boot": None, "log_cursor": 0}
             self.peers[url] = peer
         elif origin == "manual":
@@ -636,7 +640,8 @@ class Cluster:
     def cadence(self):
         if not self.enabled:
             return POLL_IDLE
-        if self.hub.watched:
+        if self.hub.watched or any(peer["silent_since"] is not None
+                                   for peer in self.peers.values()):
             return POLL_WATCHED
         # Nothing to ask and nobody asking: the beacon socket is what finds a peer,
         # and that wakes this loop, so there is no reason to keep knocking.
@@ -696,15 +701,7 @@ class Cluster:
         peer["attempted"] = time.monotonic()
         path = f"/api/node/state?port={int(self.hub.config['port'])}"
         try:
-            try:
-                answer = await self.get(peer["url"], path)
-            except Exception as error:
-                # One reply lost on a busy radio - an ESP32 shares its antenna with
-                # its BLE scan - is not a node going away; ask once more first.
-                if not (peer["online"] and network_failure(error)):
-                    raise
-                answer = await self.get(peer["url"], path)
-            state = validate_state(answer)
+            state = validate_state(await self.get(peer["url"], path))
             previous = peer["state"]
             if (previous and state["node"]["id"] == previous["node"]["id"]
                     and state["log_boot"] == previous["log_boot"]
@@ -714,12 +711,21 @@ class Cluster:
             # A node whose cluster switch is off has left; it is not misbehaving.
             left = (isinstance(error, Rejected) and isinstance(error.detail, dict)
                     and error.detail.get("event") == "error.clusterOff")
+            if not left and peer["online"] and network_failure(error):
+                now = time.monotonic()
+                if peer["silent_since"] is None:
+                    peer["silent_since"] = now
+                    self.nudges["poll"].set()
+                if now - peer["silent_since"] < SILENCE_GRACE:
+                    return
             if left or network_failure(error):
                 self._lost(peer, error)
             else:
+                peer["silent_since"] = None
                 self.local_failure(error, peer["url"])
             return
 
+        peer["silent_since"] = None
         node = state["node"]
         if node["id"] == self.node_id:
             self.peers.pop(peer["url"], None)
@@ -795,12 +801,12 @@ class Cluster:
         said = error.detail if isinstance(error, Rejected) and isinstance(
             error.detail, dict) else None
         if peer["online"]:
-            peer["down_since"] = time.monotonic()
+            peer["down_since"] = peer["silent_since"] or time.monotonic()
             self.hub.log("cluster.peerDown", node=peer["name"] or peer["url"],
                          error=said["event"] if said else str(error))
         # The state is kept: a node that is down still has the devices it is nearest
         # to, and forgetting that would hand them to a radio that can barely hear them.
-        peer.update(online=False, error=said or str(error))
+        peer.update(online=False, silent_since=None, error=said or str(error))
         # A node that holds our lock and then disappears would otherwise block
         # everyone until the TTL expires.
         if (not elsewhere and self.lock and self.lock["holder_id"] == peer["node_id"]

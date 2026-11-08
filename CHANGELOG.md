@@ -2,6 +2,13 @@
 
 [简体中文](CHANGELOG.zh-CN.md) | [繁體中文](CHANGELOG.zh-TW.md) | English
 
+## [2.0.1] - 2026-11-08
+
+### Fixed
+
+- A node, most often an ESP32, was reported as unreachable and then found again two seconds later. Wi-Fi sometimes drops replies for a few seconds; a node is now marked offline only after 10 seconds without an answer, and is asked again every 2 seconds in the meantime
+- 2.0.1 and 2.0.0 nodes work together, but upgrade every node so the fix applies in both directions
+
 ## [2.0.0] - 2026-11-08
 
 ### Upgrade notes
@@ -42,5 +49,6 @@
 
 First release: Windows installer and Linux deb, web UI, scheduled automatic sync, multi-machine cluster.
 
+[2.0.1]: https://github.com/wildcatkk/lywsd02-clock-sync/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/wildcatkk/lywsd02-clock-sync/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/wildcatkk/lywsd02-clock-sync/releases/tag/v1.0.0

@@ -37,6 +37,9 @@
 #define WATCH_WINDOW 15.0
 #define FRESH_ENOUGH 3.0
 #define DOWN_GRACE 30.0
+// Wi-Fi drops replies for a few seconds at a time, so a node counts as gone only
+// after it has stayed silent this long; until then it is asked again every POLL_WATCHED.
+#define SILENCE_GRACE 10.0
 #define DOWN_BACKOFF 60.0
 #define OWN_PORT PEER_DEFAULT_PORT
 #define REPLY_MAX (32 * 1024)
@@ -146,6 +149,8 @@ typedef struct {
     double probed;
     double attempted;
     double down_since;
+    double silent_since;
+    bool silent;      // online, but its last probes went unanswered
     bool online;
     bool has_state;
     cJSON *error;     // a string, or the {event, params} a peer refused with
@@ -1321,13 +1326,14 @@ static void lost(const char *url, cJSON *failure)
     double now = cluster_clock();
     if (peer->online) {
         was_online = true;
-        peer->down_since = now;
+        peer->down_since = peer->silent ? peer->silent_since : now;
         snprintf(name, sizeof(name), "%s", peer->name[0] ? peer->name : peer->url);
     }
     // The device list is kept: a node that is down still owns the devices it is
     // nearest to, and forgetting that would hand them to a radio that can barely
     // hear them.
     peer->online = false;
+    peer->silent = false;
     drop_logs(peer);
     cJSON_Delete(peer->error);
     peer->error = failure;
@@ -1341,6 +1347,35 @@ static void lost(const char *url, cJSON *failure)
     store_unlock();
 }
 
+// True while an online peer has not been silent for SILENCE_GRACE yet.
+static bool still_quiet(const char *url)
+{
+    bool waiting = false;
+    store_lock();
+    peer_t *peer = find_peer(url);
+    if (peer && peer->online) {
+        double now = cluster_clock();
+        if (!peer->silent) {
+            peer->silent = true;
+            peer->silent_since = now;
+            xEventGroupSetBits(nudges, POLL_BIT);
+        }
+        waiting = now - peer->silent_since < SILENCE_GRACE;
+    }
+    store_unlock();
+    return waiting;
+}
+
+static void answered(const char *url)
+{
+    store_lock();
+    peer_t *peer = find_peer(url);
+    if (peer) {
+        peer->silent = false;
+    }
+    store_unlock();
+}
+
 static void probe(const char *url)
 {
     store_lock();
@@ -1350,7 +1385,6 @@ static void probe(const char *url)
         return;
     }
     peer->attempted = cluster_clock();
-    bool was_online = peer->online;
     store_unlock();
     // Our own port goes along, so the answering node can add us to its list if it
     // has not heard our broadcast.
@@ -1359,17 +1393,13 @@ static void probe(const char *url)
     int status;
     cJSON *failure = NULL;
     char *text = request(url, path, NULL, CLUSTER_STATE_TIMEOUT, &status, &failure);
-    if (!text && was_online && status == 0) {
-        // One reply lost while the radio is shared with a BLE scan is not a node
-        // going away; asking again saves a peerDown/peerUp pair in the log.
-        cJSON_Delete(failure);
-        failure = NULL;
-        text = request(url, path, NULL, CLUSTER_STATE_TIMEOUT, &status, &failure);
-    }
     if (!text) {
         // A node whose cluster switch is off has left, it is not misbehaving.
         bool left = !strcmp(text_of(failure), "error.clusterOff");
-        if (!left && (status == LOCAL_FAILURE || status >= 500)) {
+        if (!left && status == 0 && still_quiet(url)) {
+            cJSON_Delete(failure);
+        } else if (!left && (status == LOCAL_FAILURE || status >= 500)) {
+            answered(url);
             local_problem(url, text_of(failure));
             cJSON_Delete(failure);
         } else {
@@ -1377,6 +1407,7 @@ static void probe(const char *url)
         }
         return;
     }
+    answered(url);
     cJSON *state = parse_bounded(text, strlen(text));
     free(text);
     const cJSON *node = cJSON_GetObjectItemCaseSensitive(state, "node");
@@ -1594,12 +1625,16 @@ static double cadence(void)
     }
     // Nothing to ask and nobody asking: the beacon is what finds a peer, and that
     // wakes this loop, so there is no reason to keep knocking.
-    bool any = false;
+    bool any = false, silent = false;
     store_lock();
     for (int i = 0; i < MAX_PEERS; i++) {
         any |= peers[i].used;
+        silent |= peers[i].used && peers[i].silent;
     }
     store_unlock();
+    if (silent) {
+        return POLL_WATCHED;
+    }
     return any ? POLL_IDLE : POLL_ALONE;
 }
 
