@@ -1,44 +1,46 @@
-# 更新日志
+# Changelog
+
+[简体中文](CHANGELOG.zh-CN.md) | [繁體中文](CHANGELOG.zh-TW.md) | English
 
 ## [2.0.0] - 2026-11-08
 
-### 升级须知
+### Upgrade notes
 
-- **集群里的所有节点要一起升级到 2.0.0**，1.0.0 和 2.0.0 的节点不能互通。设置和设备标签会保留。
-- HTTP 接口：`/api/state` 不再返回日志，改用 `POST /api/logs`。
-- 从源码运行的话，需要 bleak 2.x，并新增依赖 `ifaddr`。
+- **Upgrade every node in a cluster to 2.0.0 at the same time.** 1.0.0 and 2.0.0 nodes cannot talk to each other. Settings and device labels are kept.
+- HTTP API: `/api/state` no longer returns logs. Use `POST /api/logs` instead.
+- Running from source now needs bleak 2.x and the new dependency `ifaddr`.
 
-### 新增
+### Added
 
-- **ESP32-C3 版**：烧进一块 ESP32-C3 开发板，插在 USB 充电头上就能独立校时，也能和电脑、NAS 组成集群。
-  - 一键烧录包：`flash.bat` 自动找串口、写入固件，并通过 USB 设置 WiFi
-  - 没设置 WiFi 或连不上时会开热点，手机打开 `192.168.4.1` 就能配网
-  - 设备配置页 `/config`：查看和更换 WiFi、选时区、在网页上传固件升级。新固件连不上网络会自动退回原来的版本
-- **时间来源**：校时可以用本机时钟，也可以选 NTP 服务器（阿里云、腾讯云、国家授时中心，或者自己填）
-- 节点卡片整块可点，直接打开那个节点的页面
+- **ESP32-C3 version**: flash it onto an ESP32-C3 board and plug the board into a USB charger. It keeps your clocks set on its own and can join a cluster with PCs and NAS boxes.
+  - One-click flash package: `flash.bat` finds the serial port, writes the firmware and sets up Wi-Fi over USB
+  - When no Wi-Fi is set up or it cannot connect, the board opens a hotspot. Open `192.168.4.1` on your phone to set up Wi-Fi
+  - Device config page `/config`: view and change Wi-Fi, pick the time zone, and upload firmware updates from the browser. If new firmware cannot get online, the board goes back to the previous version
+- **Time source**: set clocks from the local clock or from an NTP server (pick a preset or enter your own)
+- Node cards are clickable and open that node's page
 
-### 改进
+### Changed
 
-- 日志改为按节点增量获取，开着页面时占用更少
-- 表格只更新有变化的部分，不再闪烁
-- 没有蓝牙适配器、BlueZ 没运行等情况会给出明确提示
-- 已在排队的设备再次点击时，提示说明它已在队列里
-- Linux：改端口后重新安装 deb，会删掉旧端口的防火墙规则
+- Logs are fetched incrementally per node, so an open page costs less
+- The device table only redraws what changed and no longer flickers
+- Clear messages when there is no Bluetooth adapter, BlueZ is not running, and similar cases
+- Clicking a device that is already queued now says so
+- Linux: reinstalling the deb after a port change removes the firewall rule for the old port
 
-### 修复
+### Fixed
 
-- 多网卡的机器只从一张网卡发节点广播，其他网段发现不了它
-- 节点数据里出现非法字符时，整个节点被拒绝或页面报错
-- 节点之间的请求超时算错了，还会走系统代理，导致节点互相超时、频繁掉线
-- ESP32 开着 WiFi 省电时响应很慢，现在蓝牙空闲时关闭省电
-- 蓝牙启动卡住时没有超时
-- 对方关闭了多机协作时，被误报成本机的问题
-- Windows 上偶尔误报本机资源不足
-- 设置窗口顶部多出一块空白
+- Machines with several network adapters sent node beacons on only one of them, so nodes on other subnets could not find them
+- Invalid characters in node data got the whole node rejected or broke the page
+- Requests between nodes used the wrong timeouts and went through the system proxy, so nodes timed out and dropped off often
+- The ESP32 was slow to respond with Wi-Fi power saving on. Power saving is now turned off while Bluetooth is idle
+- Bluetooth could hang on startup with no timeout
+- A peer with clustering turned off was reported as a problem on this machine
+- Windows sometimes reported low system resources when there were none
+- Extra blank space at the top of the settings window
 
 ## [1.0.0] - 2026-10-31
 
-首次发布：Windows 安装包和 Linux deb，网页管理、定时自动校时、多机集群。
+First release: Windows installer and Linux deb, web UI, scheduled automatic sync, multi-machine cluster.
 
 [2.0.0]: https://github.com/wildcatkk/lywsd02-clock-sync/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/wildcatkk/lywsd02-clock-sync/releases/tag/v1.0.0

@@ -1,8 +1,9 @@
 name: release
 
 # Push a tag that matches VERSION (v1.0.0 for 1.0.0) to build every package and
-# publish them as a GitHub release, with the matching CHANGELOG.md section as the
-# release notes. Run it by hand to get the packages as workflow artifacts only.
+# publish them as a GitHub release, with the matching sections of the three
+# CHANGELOG files as the release notes. Run it by hand to get the packages as
+# workflow artifacts only.
 on:
   push:
     tags: ["v*"]
@@ -23,27 +24,7 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match VERSION $version"
             exit 1
           fi
-          awk -v head="## [$version]" '
-            index($0, "## [") == 1 { if (on) exit; on = index($0, head) == 1; next }
-            /^\[[^]]+\]: / { if (on) exit }
-            on' CHANGELOG.md > release-notes.md
-          if ! grep -q '[^[:space:]]' release-notes.md; then
-            echo "::error::CHANGELOG.md has no section for $version"
-            exit 1
-          fi
-          sed "s/@VERSION@/$version/g" >> release-notes.md <<'EOF'
-          ### 下载
-
-          | 平台 | 文件 |
-          | --- | --- |
-          | Windows x64 | `LYWSD02ClockSync-Setup-@VERSION@-x64.exe` |
-          | Windows ARM64（实验性） | `LYWSD02ClockSync-Setup-@VERSION@-arm64.exe` |
-          | Linux x86_64 | `lywsd02-clock-sync_@VERSION@_amd64.deb` |
-          | Linux ARM64 | `lywsd02-clock-sync_@VERSION@_arm64.deb` |
-          | ESP32-C3 首次烧录（Windows 一键包） | `LYWSD02-Clock-Sync-ESP32-@VERSION@-windows.zip` |
-          | ESP32-C3 首次烧录（用 esptool 写到 0x0） | `lywsd02-clock-sync-@VERSION@-esp32c3-full.bin` |
-          | ESP32-C3 网页升级 | `lywsd02-clock-sync-@VERSION@-esp32c3-ota.bin` |
-          EOF
+          python3 packaging/release_notes.py release-notes.md
           cat release-notes.md
       - uses: actions/upload-artifact@v7
         with:
